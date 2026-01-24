@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Claude Proxy</title>
+    <link rel="stylesheet" href="/src/style.css">
+</head>
+<body>
+    <div class="container">
+        <div class="card">
+            <h1>Claude Proxy</h1>
+            <p class="subtitle">SSH 反向隧道代理服务器</p>
+
+            <div class="status-bar">
+                <div class="status-item">
+                    <div class="status-dot red" id="proxyStatus"></div>
+                    <span>代理服务</span>
+                </div>
+                <div class="status-item">
+                    <div class="status-dot red" id="tunnelStatus"></div>
+                    <span id="tunnelStatusText">SSH 隧道</span>
+                </div>
+            </div>
+
+            <div id="message" class="message"></div>
+
+            <form id="configForm" onsubmit="return false;">
+                <div class="section-title">SSH 连接设置 (B电脑)</div>
+
+                <div class="row">
+                    <div class="form-group">
+                        <label>IP 地址 / 主机名</label>
+                        <input type="text" id="sshHost" name="ssh_host" placeholder="192.168.1.100 或 example.com" required>
+                    </div>
+                    <div class="form-group" style="max-width: 100px;">
+                        <label>SSH 端口</label>
+                        <input type="number" id="sshPort" name="ssh_port" value="22" placeholder="22">
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label>SSH 用户名</label>
+                    <input type="text" id="sshUser" name="ssh_user" placeholder="ubuntu / root" required>
+                </div>
+
+                <div class="form-group">
+                    <label>SSH 密码 (可选，优先使用密钥)</label>
+                    <input type="password" id="sshPassword" name="ssh_password" placeholder="如果需要密码认证">
+                    <p class="help-text">程序会自动尝试 ~/.ssh/ 下的密钥，密码仅作备用</p>
+                </div>
+
+                <div class="section-title">端口设置</div>
+
+                <div class="row">
+                    <div class="form-group">
+                        <label>本地代理端口 (A电脑)</label>
+                        <input type="number" id="proxyPort" name="proxy_port" value="8080" placeholder="8080">
+                    </div>
+                    <div class="form-group">
+                        <label>远程代理端口 (B电脑)</label>
+                        <input type="number" id="remotePort" name="remote_port" value="8080" placeholder="8080">
+                    </div>
+                </div>
+
+                <div class="buttons">
+                    <button type="button" id="startBtn" class="btn btn-primary" onclick="startTunnel()">启动连接</button>
+                    <button type="button" id="stopBtn" class="btn btn-danger" onclick="stopTunnel()" style="display:none;">停止连接</button>
+                </div>
+            </form>
+        </div>
+
+        <div class="card">
+            <h1>运行日志</h1>
+            <div class="log-container" id="logContainer">
+                <div class="log-entry">等待启动...</div>
+            </div>
+        </div>
+
+        <div class="card" id="commandCard" style="display:none;">
+            <h1>B电脑配置命令</h1>
+            <p class="subtitle">连接成功后，在 B电脑上运行以下命令</p>
+
+            <div class="command-section">
+                <div class="command-header">
+                    <span class="command-title">设置代理环境变量</span>
+                    <button class="copy-btn" onclick="copyCommand('envCmd')">复制</button>
+                </div>
+                <div class="command-box" id="envCmd">export HTTP_PROXY=http://127.0.0.1:<span id="cmdPort">8080</span>
+export HTTPS_PROXY=http://127.0.0.1:<span id="cmdPort2">8080</span></div>
+            </div>
+
+            <div class="command-section">
+                <div class="command-header">
+                    <span class="command-title">测试代理连接</span>
+                    <button class="copy-btn" onclick="copyCommand('testCmd')">复制</button>
+                </div>
+                <div class="command-box" id="testCmd">curl -x $HTTPS_PROXY https://httpbin.org/ip</div>
+            </div>
+
+            <div class="command-section">
+                <div class="command-header">
+                    <span class="command-title">使用 Claude Code</span>
+                    <button class="copy-btn" onclick="copyCommand('claudeCmd')">复制</button>
+                </div>
+                <div class="command-box" id="claudeCmd">claude</div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/src/main.js"></script>
+</body>
+</html>
