@@ -5,22 +5,29 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"sync"
 	"time"
 )
 
 // ProxyServer handles HTTP CONNECT proxy requests
 type ProxyServer struct {
-	port     int
-	server   *http.Server
-	listener net.Listener
-	mu       sync.Mutex
+	port        int
+	server      *http.Server
+	listener    net.Listener
+	mu          sync.Mutex
+	httpProxy   string
+	httpsProxy  string
+	proxyDialer *net.Dialer
 }
 
 // NewProxyServer creates a new proxy server instance
-func NewProxyServer(port int) *ProxyServer {
+func NewProxyServer(port int, httpProxy, httpsProxy string) *ProxyServer {
 	return &ProxyServer{
-		port: port,
+		port:        port,
+		httpProxy:   httpProxy,
+		httpsProxy:  httpsProxy,
+		proxyDialer: &net.Dialer{Timeout: 30 * time.Second},
 	}
 }
 
@@ -70,8 +77,17 @@ func (p *ProxyServer) handleRequest(w http.ResponseWriter, r *http.Request) {
 func (p *ProxyServer) handleConnect(w http.ResponseWriter, r *http.Request) {
 	fmt.Printf("[Proxy] CONNECT %s\n", r.Host)
 
-	// Connect to the target server
-	targetConn, err := net.DialTimeout("tcp", r.Host, 30*time.Second)
+	var targetConn net.Conn
+	var err error
+
+	// Check if we need to use upstream proxy for HTTPS
+	if p.httpsProxy != "" {
+		targetConn, err = p.dialThroughProxy(p.httpsProxy, r.Host)
+	} else {
+		// Direct connection
+		targetConn, err = net.DialTimeout("tcp", r.Host, 30*time.Second)
+	}
+
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Failed to connect to %s: %v", r.Host, err), http.StatusBadGateway)
 		fmt.Printf("[Proxy] Failed to connect to %s: %v\n", r.Host, err)
@@ -122,6 +138,72 @@ func (p *ProxyServer) handleConnect(w http.ResponseWriter, r *http.Request) {
 	fmt.Printf("[Proxy] CONNECT %s completed\n", r.Host)
 }
 
+// dialThroughProxy connects to target through an HTTP proxy
+func (p *ProxyServer) dialThroughProxy(proxyURL, targetHost string) (net.Conn, error) {
+	parsedURL, err := url.Parse(proxyURL)
+	if err != nil {
+		return nil, fmt.Errorf("invalid proxy URL: %w", err)
+	}
+
+	// Connect to the proxy server
+	proxyAddr := parsedURL.Host
+	if parsedURL.Port() == "" {
+		proxyAddr = net.JoinHostPort(parsedURL.Hostname(), "80")
+	}
+
+	conn, err := p.proxyDialer.Dial("tcp", proxyAddr)
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to proxy %s: %w", proxyAddr, err)
+	}
+
+	// Send CONNECT request to proxy
+	connectReq := fmt.Sprintf("CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", targetHost, targetHost)
+	_, err = conn.Write([]byte(connectReq))
+	if err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("failed to send CONNECT to proxy: %w", err)
+	}
+
+	// Read proxy response
+	response := make([]byte, 4096)
+	n, err := conn.Read(response)
+	if err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("failed to read proxy response: %w", err)
+	}
+
+	// Check if proxy accepted the connection (200 or 201)
+	responseStr := string(response[:n])
+	if !contains(responseStr, "200") && !contains(responseStr, "201") {
+		conn.Close()
+		return nil, fmt.Errorf("proxy rejected connection: %s", responseStr[:min(200, n)])
+	}
+
+	fmt.Printf("[Proxy] Connected to %s through proxy %s\n", targetHost, proxyAddr)
+	return conn, nil
+}
+
+// Helper function to check if string contains substring
+func contains(s, substr string) bool {
+	return len(s) >= len(substr) && (s[:len(substr)] == substr || len(s) > len(substr) && s[1:len(substr)+1] == substr || stringContains(s, substr))
+}
+
+func stringContains(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
 // handleHTTP handles regular HTTP requests (non-CONNECT)
 func (p *ProxyServer) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	fmt.Printf("[Proxy] %s %s\n", r.Method, r.URL.String())
@@ -145,12 +227,23 @@ func (p *ProxyServer) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	outReq.Header.Del("Proxy-Authenticate")
 	outReq.Header.Del("Proxy-Authorization")
 
-	// Send request
+	// Create HTTP client with optional proxy
 	client := &http.Client{
 		Timeout: 120 * time.Second,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse // Don't follow redirects
 		},
+	}
+
+	// Configure upstream proxy if specified
+	if p.httpProxy != "" {
+		proxyURL, err := url.Parse(p.httpProxy)
+		if err == nil {
+			client.Transport = &http.Transport{
+				Proxy: http.ProxyURL(proxyURL),
+			}
+			fmt.Printf("[Proxy] Using upstream HTTP proxy: %s\n", p.httpProxy)
+		}
 	}
 
 	resp, err := client.Do(outReq)

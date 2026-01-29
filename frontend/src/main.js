@@ -18,7 +18,9 @@ function getConfig() {
         ssh_password: document.getElementById('sshPassword').value,
         ssh_key_path: document.getElementById('sshKeyPath')?.value || '',
         proxy_port: parseInt(document.getElementById('proxyPort').value) || 8080,
-        remote_port: parseInt(document.getElementById('remotePort').value) || 8080
+        remote_port: parseInt(document.getElementById('remotePort').value) || 8080,
+        http_proxy: document.getElementById('httpProxy').value,
+        https_proxy: document.getElementById('httpsProxy').value
     };
 }
 
@@ -183,6 +185,8 @@ async function loadConfig() {
         if (config.ssh_port) document.getElementById('sshPort').value = config.ssh_port;
         if (config.ssh_user) document.getElementById('sshUser').value = config.ssh_user;
         if (config.proxy_port) document.getElementById('proxyPort').value = config.proxy_port;
+        if (config.http_proxy) document.getElementById('httpProxy').value = config.http_proxy;
+        if (config.https_proxy) document.getElementById('httpsProxy').value = config.https_proxy;
 
         // Update command box ports
         const remotePort = config.remote_port || 8080;

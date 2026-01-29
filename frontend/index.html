@@ -63,6 +63,19 @@
                     </div>
                 </div>
 
+                <div class="section-title">上游代理设置 (A电脑访问互联网)</div>
+                <p class="help-text">如果 A电脑 需要通过代理访问互联网，请填写以下信息</p>
+
+                <div class="form-group">
+                    <label>HTTP 代理 (可选)</label>
+                    <input type="text" id="httpProxy" name="http_proxy" placeholder="http://proxy.xxx.com.cn:80">
+                </div>
+
+                <div class="form-group">
+                    <label>HTTPS 代理 (可选)</label>
+                    <input type="text" id="httpsProxy" name="https_proxy" placeholder="http://proxy.xxx.com.cn:80">
+                </div>
+
                 <div class="buttons">
                     <button type="button" id="startBtn" class="btn btn-primary" onclick="startTunnel()">启动连接</button>
                     <button type="button" id="stopBtn" class="btn btn-danger" onclick="stopTunnel()" style="display:none;">停止连接</button>

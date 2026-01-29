@@ -150,8 +150,11 @@ func (a *App) Start(config *Config) error {
 	a.addLog("正在启动代理服务器...")
 
 	// Start proxy server
-	a.proxy = NewProxyServer(config.ProxyPort)
+	a.proxy = NewProxyServer(config.ProxyPort, config.HTTPProxy, config.HTTPSProxy)
 	go func() {
+		if config.HTTPProxy != "" || config.HTTPSProxy != "" {
+			a.addLog(fmt.Sprintf("上游代理: HTTP=%s HTTPS=%s", config.HTTPProxy, config.HTTPSProxy))
+		}
 		a.addLog(fmt.Sprintf("代理服务监听 127.0.0.1:%d", config.ProxyPort))
 		a.updateStatus(true, false, true, "")
 		if err := a.proxy.Start(); err != nil {

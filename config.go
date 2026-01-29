@@ -20,6 +20,10 @@ type Config struct {
 	// Proxy settings
 	ProxyPort  int `json:"proxy_port"`
 	RemotePort int `json:"remote_port"`
+
+	// Upstream proxy settings (for A computer to access internet)
+	HTTPProxy  string `json:"http_proxy,omitempty"`
+	HTTPSProxy string `json:"https_proxy,omitempty"`
 }
 
 // DefaultConfig returns a config with default values

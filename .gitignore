@@ -55,3 +55,8 @@ node_modules/
 # Wails specific
 wails_build.log
 frontend/wailsjs/
+
+
+# claude
+.claude/
+.codex/
