@@ -19,15 +19,17 @@ type ProxyServer struct {
 	httpProxy   string
 	httpsProxy  string
 	proxyDialer *net.Dialer
+	log         LogFunc
 }
 
 // NewProxyServer creates a new proxy server instance
-func NewProxyServer(port int, httpProxy, httpsProxy string) *ProxyServer {
+func NewProxyServer(port int, httpProxy, httpsProxy string, log LogFunc) *ProxyServer {
 	return &ProxyServer{
 		port:        port,
 		httpProxy:   httpProxy,
 		httpsProxy:  httpsProxy,
 		proxyDialer: &net.Dialer{Timeout: 30 * time.Second},
+		log:         log,
 	}
 }
 
@@ -50,7 +52,7 @@ func (p *ProxyServer) Start() error {
 	}
 	p.mu.Unlock()
 
-	fmt.Printf("[Proxy] Listening on %s\n", addr)
+	p.log(LevelInfo, fmt.Sprintf("Listening on %s", addr))
 	return p.server.Serve(listener)
 }
 
@@ -75,7 +77,7 @@ func (p *ProxyServer) handleRequest(w http.ResponseWriter, r *http.Request) {
 
 // handleConnect handles HTTPS CONNECT tunnel requests
 func (p *ProxyServer) handleConnect(w http.ResponseWriter, r *http.Request) {
-	fmt.Printf("[Proxy] CONNECT %s\n", r.Host)
+	p.log(LevelDebug, fmt.Sprintf(">> 收到 HTTPS 请求: %s", r.Host))
 
 	var targetConn net.Conn
 	var err error
@@ -90,7 +92,7 @@ func (p *ProxyServer) handleConnect(w http.ResponseWriter, r *http.Request) {
 
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Failed to connect to %s: %v", r.Host, err), http.StatusBadGateway)
-		fmt.Printf("[Proxy] Failed to connect to %s: %v\n", r.Host, err)
+		p.log(LevelError, fmt.Sprintf("Failed to connect to %s: %v", r.Host, err))
 		return
 	}
 	defer targetConn.Close()
@@ -112,7 +114,7 @@ func (p *ProxyServer) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// Send 200 Connection Established
 	_, err = clientConn.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n"))
 	if err != nil {
-		fmt.Printf("[Proxy] Failed to send connection established: %v\n", err)
+		p.log(LevelError, fmt.Sprintf("Failed to send connection established: %v", err))
 		return
 	}
 
@@ -135,7 +137,7 @@ func (p *ProxyServer) handleConnect(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	wg.Wait()
-	fmt.Printf("[Proxy] CONNECT %s completed\n", r.Host)
+	p.log(LevelDebug, fmt.Sprintf("CONNECT %s completed", r.Host))
 }
 
 // dialThroughProxy connects to target through an HTTP proxy
@@ -179,7 +181,7 @@ func (p *ProxyServer) dialThroughProxy(proxyURL, targetHost string) (net.Conn, e
 		return nil, fmt.Errorf("proxy rejected connection: %s", responseStr[:min(200, n)])
 	}
 
-	fmt.Printf("[Proxy] Connected to %s through proxy %s\n", targetHost, proxyAddr)
+	p.log(LevelDebug, fmt.Sprintf("Connected to %s through proxy %s", targetHost, proxyAddr))
 	return conn, nil
 }
 
@@ -206,7 +208,7 @@ func min(a, b int) int {
 
 // handleHTTP handles regular HTTP requests (non-CONNECT)
 func (p *ProxyServer) handleHTTP(w http.ResponseWriter, r *http.Request) {
-	fmt.Printf("[Proxy] %s %s\n", r.Method, r.URL.String())
+	p.log(LevelDebug, fmt.Sprintf(">> 收到 HTTP 请求: %s %s", r.Method, r.URL.String()))
 
 	// Create the outgoing request
 	outReq, err := http.NewRequest(r.Method, r.URL.String(), r.Body)
@@ -242,7 +244,7 @@ func (p *ProxyServer) handleHTTP(w http.ResponseWriter, r *http.Request) {
 			client.Transport = &http.Transport{
 				Proxy: http.ProxyURL(proxyURL),
 			}
-			fmt.Printf("[Proxy] Using upstream HTTP proxy: %s\n", p.httpProxy)
+			p.log(LevelDebug, fmt.Sprintf("Using upstream HTTP proxy: %s", p.httpProxy))
 		}
 	}
 

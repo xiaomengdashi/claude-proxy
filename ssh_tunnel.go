@@ -24,14 +24,16 @@ type SSHTunnel struct {
 	reconnect       bool
 	OnStatusChange  func(connected bool, err error)
 	PasswordPrompt  func() string // Callback to prompt for password if needed
+	log             LogFunc
 }
 
 // NewSSHTunnel creates a new SSH tunnel instance
-func NewSSHTunnel(config *Config) *SSHTunnel {
+func NewSSHTunnel(config *Config, log LogFunc) *SSHTunnel {
 	return &SSHTunnel{
 		config:    config,
 		stopChan:  make(chan struct{}),
 		reconnect: true,
+		log:       log,
 	}
 }
 
@@ -48,7 +50,7 @@ func (t *SSHTunnel) Start(ctx context.Context) error {
 
 		err := t.connect(ctx)
 		if err != nil {
-			fmt.Printf("[SSH] Connection error: %v\n", err)
+			t.log(LevelError, fmt.Sprintf("Connection error: %v", err))
 			if t.OnStatusChange != nil {
 				t.OnStatusChange(false, err)
 			}
@@ -62,7 +64,7 @@ func (t *SSHTunnel) Start(ctx context.Context) error {
 			return err
 		}
 
-		fmt.Println("[SSH] Reconnecting in 5 seconds...")
+		t.log(LevelInfo, "Reconnecting in 5 seconds...")
 		select {
 		case <-time.After(5 * time.Second):
 		case <-ctx.Done():
@@ -70,21 +72,6 @@ func (t *SSHTunnel) Start(ctx context.Context) error {
 		case <-t.stopChan:
 			return nil
 		}
-	}
-}
-
-// getDefaultKeyPaths returns common SSH key paths
-func getDefaultKeyPaths() []string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil
-	}
-	sshDir := filepath.Join(home, ".ssh")
-	return []string{
-		filepath.Join(sshDir, "id_rsa"),
-		filepath.Join(sshDir, "id_ed25519"),
-		filepath.Join(sshDir, "id_ecdsa"),
-		filepath.Join(sshDir, "id_dsa"),
 	}
 }
 
@@ -97,7 +84,7 @@ func (t *SSHTunnel) trySSHAgent() (ssh.AuthMethod, net.Conn) {
 
 	conn, err := net.Dial("unix", socket)
 	if err != nil {
-		fmt.Printf("[SSH] Could not connect to SSH agent: %v\n", err)
+		t.log(LevelDebug, fmt.Sprintf("Could not connect to SSH agent: %v", err))
 		return nil, nil
 	}
 
@@ -106,20 +93,20 @@ func (t *SSHTunnel) trySSHAgent() (ssh.AuthMethod, net.Conn) {
 	// Check if agent has any keys
 	keys, err := agentClient.List()
 	if err != nil {
-		fmt.Printf("[SSH] Could not list agent keys: %v\n", err)
+		t.log(LevelDebug, fmt.Sprintf("Could not list agent keys: %v", err))
 		conn.Close()
 		return nil, nil
 	}
 
 	if len(keys) == 0 {
-		fmt.Println("[SSH] SSH agent has no keys")
+		t.log(LevelDebug, "SSH agent has no keys")
 		conn.Close()
 		return nil, nil
 	}
 
-	fmt.Printf("[SSH] SSH agent has %d key(s)\n", len(keys))
+	t.log(LevelDebug, fmt.Sprintf("SSH agent has %d key(s)", len(keys)))
 	for _, key := range keys {
-		fmt.Printf("[SSH]   - %s\n", key.Comment)
+		t.log(LevelDebug, fmt.Sprintf("  - %s", key.Comment))
 	}
 
 	return ssh.PublicKeysCallback(agentClient.Signers), conn
@@ -138,10 +125,10 @@ func (t *SSHTunnel) buildAuthMethods() []ssh.AuthMethod {
 	// 2. Try specified key path
 	if t.config.SSHKeyPath != "" {
 		if keyAuth, err := t.loadPrivateKeyFromPath(t.config.SSHKeyPath); err == nil {
-			fmt.Printf("[SSH] Loaded key from %s\n", t.config.SSHKeyPath)
+			t.log(LevelDebug, fmt.Sprintf("Loaded key from %s", t.config.SSHKeyPath))
 			methods = append(methods, keyAuth)
 		} else {
-			fmt.Printf("[SSH] Warning: Could not load key %s: %v\n", t.config.SSHKeyPath, err)
+			t.log(LevelError, fmt.Sprintf("Warning: Could not load key %s: %v", t.config.SSHKeyPath, err))
 		}
 	}
 
@@ -149,7 +136,7 @@ func (t *SSHTunnel) buildAuthMethods() []ssh.AuthMethod {
 	for _, keyPath := range getDefaultKeyPaths() {
 		if _, err := os.Stat(keyPath); err == nil {
 			if keyAuth, err := t.loadPrivateKeyFromPath(keyPath); err == nil {
-				fmt.Printf("[SSH] Found key at %s\n", keyPath)
+				t.log(LevelDebug, fmt.Sprintf("Found key at %s", keyPath))
 				methods = append(methods, keyAuth)
 			}
 		}
@@ -167,7 +154,7 @@ func (t *SSHTunnel) buildAuthMethods() []ssh.AuthMethod {
 			if t.config.SSHPassword != "" {
 				answers[i] = t.config.SSHPassword
 			} else if t.PasswordPrompt != nil {
-				fmt.Printf("[SSH] Password required for %s@%s\n", t.config.SSHUser, t.config.SSHHost)
+				t.log(LevelInfo, fmt.Sprintf("Password required for %s@%s", t.config.SSHUser, t.config.SSHHost))
 				answers[i] = t.PasswordPrompt()
 			}
 		}
@@ -196,13 +183,13 @@ func (t *SSHTunnel) connect(ctx context.Context) error {
 
 	// Connect to SSH server
 	addr := fmt.Sprintf("%s:%d", t.config.SSHHost, t.config.SSHPort)
-	fmt.Printf("[SSH] Dialing %s...\n", addr)
+	t.log(LevelInfo, fmt.Sprintf("Dialing %s...", addr))
 
 	client, err := ssh.Dial("tcp", addr, sshConfig)
 	if err != nil {
 		// If key auth failed, try prompting for password
 		if t.config.SSHPassword == "" && t.PasswordPrompt != nil {
-			fmt.Println("[SSH] Key authentication failed, prompting for password...")
+			t.log(LevelInfo, "Key authentication failed, prompting for password...")
 			t.config.SSHPassword = t.PasswordPrompt()
 
 			// Retry with password
@@ -225,7 +212,7 @@ func (t *SSHTunnel) connect(ctx context.Context) error {
 		client.Close()
 	}()
 
-	fmt.Println("[SSH] Connected successfully")
+	t.log(LevelInfo, "Connected successfully")
 
 	// Start reverse port forwarding
 	// This makes B computer's localhost:RemotePort forward to A computer's localhost:ProxyPort
@@ -246,7 +233,7 @@ func (t *SSHTunnel) connect(ctx context.Context) error {
 		listener.Close()
 	}()
 
-	fmt.Printf("[SSH] Reverse tunnel established: B:%d -> A:%d\n", t.config.RemotePort, t.config.ProxyPort)
+	t.log(LevelInfo, fmt.Sprintf("Reverse tunnel established: B:%d -> A:%d", t.config.RemotePort, t.config.ProxyPort))
 
 	// Notify successful connection
 	if t.OnStatusChange != nil {
@@ -288,7 +275,7 @@ func (t *SSHTunnel) handleRemoteConnection(remoteConn net.Conn) {
 	localAddr := fmt.Sprintf("127.0.0.1:%d", t.config.ProxyPort)
 	localConn, err := net.DialTimeout("tcp", localAddr, 10*time.Second)
 	if err != nil {
-		fmt.Printf("[SSH] Failed to connect to local proxy: %v\n", err)
+		t.log(LevelError, fmt.Sprintf("Failed to connect to local proxy: %v", err))
 		return
 	}
 	defer localConn.Close()
@@ -324,7 +311,7 @@ func (t *SSHTunnel) keepalive(ctx context.Context, client *ssh.Client) {
 		case <-ticker.C:
 			_, _, err := client.SendRequest("keepalive@openssh.com", true, nil)
 			if err != nil {
-				fmt.Printf("[SSH] Keepalive failed: %v\n", err)
+				t.log(LevelError, fmt.Sprintf("Keepalive failed: %v", err))
 				return
 			}
 		}
@@ -368,10 +355,25 @@ func (t *SSHTunnel) Stop() {
 	}
 	t.mu.Unlock()
 
-	fmt.Println("[SSH] Tunnel stopped")
+	t.log(LevelInfo, "Tunnel stopped")
 }
 
 // readFile reads a file and returns its contents
 func readFile(path string) ([]byte, error) {
 	return readFileFromPath(path)
+}
+
+// getDefaultKeyPaths returns common SSH key paths
+func getDefaultKeyPaths() []string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil
+	}
+	sshDir := filepath.Join(home, ".ssh")
+	return []string{
+		filepath.Join(sshDir, "id_rsa"),
+		filepath.Join(sshDir, "id_ed25519"),
+		filepath.Join(sshDir, "id_ecdsa"),
+		filepath.Join(sshDir, "id_dsa"),
+	}
 }

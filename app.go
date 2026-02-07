@@ -32,6 +32,11 @@ type Status struct {
 	StartTime       string `json:"start_time,omitempty"`
 }
 
+type RecordsResponse struct {
+	Records  []RemoteRecord `json:"records"`
+	ActiveID string         `json:"active_id"`
+}
+
 // NewApp creates a new App instance
 func NewApp() *App {
 	return &App{
@@ -64,10 +69,10 @@ func (a *App) GetConfig() *Config {
 	a.configMu.RLock()
 	defer a.configMu.RUnlock()
 
-	// Return a copy without password
 	config := *a.config
 	config.SSHPassword = ""
 	config.SSHKeyPassphrase = ""
+	config.syncLegacyFromActive()
 	return &config
 }
 
@@ -76,7 +81,6 @@ func (a *App) SaveConfig(config *Config) error {
 	a.configMu.Lock()
 	defer a.configMu.Unlock()
 
-	// Apply defaults
 	if config.SSHPort == 0 {
 		config.SSHPort = 22
 	}
@@ -87,16 +91,111 @@ func (a *App) SaveConfig(config *Config) error {
 		config.RemotePort = 8080
 	}
 
-	*a.config = *config
-
-	// Save to file (without password)
-	if err := config.Save(); err != nil {
+	a.upsertRecordFromConfigLocked(config)
+	if err := a.config.Save(); err != nil {
 		a.addLog(fmt.Sprintf("保存配置失败: %v", err))
 		return err
 	}
 
 	a.addLog("配置已保存")
 	return nil
+}
+
+func (a *App) GetRecords() *RecordsResponse {
+	a.configMu.RLock()
+	defer a.configMu.RUnlock()
+	return a.recordsResponseLocked()
+}
+
+func (a *App) SaveRecord(record *RemoteRecord) (*RecordsResponse, error) {
+	if record == nil {
+		return nil, fmt.Errorf("record is nil")
+	}
+	a.configMu.Lock()
+	defer a.configMu.Unlock()
+
+	a.config.normalize()
+	newRecord := *record
+	if newRecord.ID == "" {
+		newRecord.ID = newRecordID()
+	}
+	if newRecord.Name == "" {
+		if idx := a.config.findRecordIndex(newRecord.ID); idx >= 0 {
+			newRecord.Name = a.config.Records[idx].Name
+		}
+	}
+	a.config.applyDefaultsToRecord(&newRecord)
+
+	if idx := a.config.findRecordIndex(newRecord.ID); idx >= 0 {
+		a.config.Records[idx] = newRecord
+	} else {
+		a.config.Records = append(a.config.Records, newRecord)
+	}
+	a.config.ActiveID = newRecord.ID
+	a.config.syncLegacyFromActive()
+
+	if err := a.config.Save(); err != nil {
+		a.addLog(fmt.Sprintf("保存配置失败: %v", err))
+		return nil, err
+	}
+
+	return a.recordsResponseLocked(), nil
+}
+
+func (a *App) DeleteRecord(id string) (*RecordsResponse, error) {
+	if id == "" {
+		return nil, fmt.Errorf("record id is empty")
+	}
+	a.configMu.Lock()
+	defer a.configMu.Unlock()
+
+	a.config.normalize()
+	if idx := a.config.findRecordIndex(id); idx >= 0 {
+		a.config.Records = append(a.config.Records[:idx], a.config.Records[idx+1:]...)
+	}
+
+	if len(a.config.Records) == 0 {
+		defaultConfig := DefaultConfig()
+		a.config.Records = defaultConfig.Records
+		a.config.ActiveID = defaultConfig.ActiveID
+	}
+
+	if a.config.findRecordIndex(a.config.ActiveID) == -1 && len(a.config.Records) > 0 {
+		a.config.ActiveID = a.config.Records[0].ID
+	}
+
+	a.config.syncLegacyFromActive()
+	if err := a.config.Save(); err != nil {
+		a.addLog(fmt.Sprintf("保存配置失败: %v", err))
+		return nil, err
+	}
+
+	return a.recordsResponseLocked(), nil
+}
+
+func (a *App) SetActiveRecord(id string) (*Config, error) {
+	if id == "" {
+		return nil, fmt.Errorf("record id is empty")
+	}
+	a.configMu.Lock()
+	defer a.configMu.Unlock()
+
+	a.config.normalize()
+	if a.config.findRecordIndex(id) == -1 {
+		return nil, fmt.Errorf("record not found")
+	}
+	a.config.ActiveID = id
+	a.config.syncLegacyFromActive()
+	if err := a.config.Save(); err != nil {
+		a.addLog(fmt.Sprintf("保存配置失败: %v", err))
+		return nil, err
+	}
+
+	config := *a.config
+	config.SSHPassword = ""
+	config.SSHKeyPassphrase = ""
+	config.syncLegacyFromActive()
+	return &config, nil
 }
 
 // GetStatus returns the current status
@@ -134,13 +233,21 @@ func (a *App) Start(config *Config) error {
 		a.proxy.Stop()
 	}
 
-	// Update stored config
+	if config.SSHPort == 0 {
+		config.SSHPort = 22
+	}
+	if config.ProxyPort == 0 {
+		config.ProxyPort = 8080
+	}
+	if config.RemotePort == 0 {
+		config.RemotePort = 8080
+	}
+
 	a.configMu.Lock()
-	*a.config = *config
+	a.upsertRecordFromConfigLocked(config)
 	a.configMu.Unlock()
 
-	// Save config (without password)
-	config.Save()
+	a.config.Save()
 
 	// Create new context
 	a.tunnelCtx, a.tunnelStop = context.WithCancel(context.Background())
@@ -150,7 +257,9 @@ func (a *App) Start(config *Config) error {
 	a.addLog("正在启动代理服务器...")
 
 	// Start proxy server
-	a.proxy = NewProxyServer(config.ProxyPort, config.HTTPProxy, config.HTTPSProxy)
+	a.proxy = NewProxyServer(config.ProxyPort, config.HTTPProxy, config.HTTPSProxy, func(level, msg string) {
+		a.log(level, msg)
+	})
 	go func() {
 		if config.HTTPProxy != "" || config.HTTPSProxy != "" {
 			a.addLog(fmt.Sprintf("上游代理: HTTP=%s HTTPS=%s", config.HTTPProxy, config.HTTPSProxy))
@@ -164,7 +273,9 @@ func (a *App) Start(config *Config) error {
 	}()
 
 	// Start SSH tunnel
-	a.tunnel = NewSSHTunnel(config)
+	a.tunnel = NewSSHTunnel(config, func(level, msg string) {
+		a.log(level, msg)
+	})
 	a.tunnel.OnStatusChange = func(connected bool, err error) {
 		errMsg := ""
 		if err != nil {
@@ -223,17 +334,115 @@ func (a *App) updateStatus(proxyRunning, tunnelConnected, tunnelRunning bool, la
 	a.status.LastError = lastError
 }
 
-// addLog adds a log message
-func (a *App) addLog(msg string) {
+const (
+	LevelError = "ERROR"
+	LevelInfo  = "INFO"
+	LevelDebug = "DEBUG"
+)
+
+// LogFunc is a function for logging
+type LogFunc func(level, msg string)
+
+// log adds a log message with level check
+func (a *App) log(level, msg string) {
+	a.configMu.RLock()
+	configLevel := a.config.LogLevel
+	if configLevel == "" {
+		configLevel = LevelInfo
+	}
+	a.configMu.RUnlock()
+
+	// Filter logs
+	shouldLog := false
+	switch configLevel {
+	case LevelError:
+		shouldLog = level == LevelError
+	case LevelInfo:
+		shouldLog = level == LevelError || level == LevelInfo
+	case LevelDebug:
+		shouldLog = true
+	default:
+		shouldLog = level == LevelError || level == LevelInfo
+	}
+
+	if !shouldLog {
+		return
+	}
+
 	a.logsMu.Lock()
 	defer a.logsMu.Unlock()
 
 	timestamp := time.Now().Format("15:04:05")
-	logEntry := fmt.Sprintf("[%s] %s", timestamp, msg)
+	
+	// Add prefix for Error and Debug
+	prefix := ""
+	if level == LevelError {
+		prefix = "[ERROR] "
+	} else if level == LevelDebug {
+		prefix = "[DEBUG] "
+	}
+
+	logEntry := fmt.Sprintf("[%s] %s%s", timestamp, prefix, msg)
 	a.logs = append(a.logs, logEntry)
 
 	// Keep only last 100 logs
 	if len(a.logs) > 100 {
 		a.logs = a.logs[len(a.logs)-100:]
 	}
+}
+
+// addLog adds a default INFO log message (for backward compatibility)
+func (a *App) addLog(msg string) {
+	a.log(LevelInfo, msg)
+}
+
+// ClearLogs clears the logs
+func (a *App) ClearLogs() {
+	a.logsMu.Lock()
+	defer a.logsMu.Unlock()
+	a.logs = make([]string, 0, 100)
+}
+
+func (a *App) recordsResponseLocked() *RecordsResponse {
+	records := make([]RemoteRecord, len(a.config.Records))
+	copy(records, a.config.Records)
+	return &RecordsResponse{
+		Records:  records,
+		ActiveID: a.config.ActiveID,
+	}
+}
+
+func (a *App) upsertRecordFromConfigLocked(config *Config) {
+	a.config.normalize()
+	recordID := config.ActiveID
+	if recordID == "" {
+		recordID = newRecordID()
+	}
+	record := RemoteRecord{
+		ID:         recordID,
+		Name:       config.RecordName,
+		SSHHost:    config.SSHHost,
+		SSHPort:    config.SSHPort,
+		SSHUser:    config.SSHUser,
+		SSHKeyPath: config.SSHKeyPath,
+		ProxyPort:  config.ProxyPort,
+		RemotePort: config.RemotePort,
+		HTTPProxy:  config.HTTPProxy,
+		HTTPSProxy: config.HTTPSProxy,
+		LogLevel:   config.LogLevel,
+	}
+	if record.Name == "" {
+		if idx := a.config.findRecordIndex(record.ID); idx >= 0 {
+			record.Name = a.config.Records[idx].Name
+		}
+	}
+	a.config.applyDefaultsToRecord(&record)
+
+	if idx := a.config.findRecordIndex(record.ID); idx >= 0 {
+		a.config.Records[idx] = record
+	} else {
+		a.config.Records = append(a.config.Records, record)
+	}
+	a.config.ActiveID = record.ID
+	a.config.syncLegacyFromActive()
 }
