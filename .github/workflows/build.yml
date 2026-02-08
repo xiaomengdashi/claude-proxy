@@ -14,15 +14,18 @@ jobs:
           - os: windows-latest
             goos: windows
             goarch: amd64
-            output: claude-proxy-windows-amd64.exe
+            binary_name: claude-proxy.exe
+            output_name: claude-proxy-windows-amd64.exe
           - os: macos-latest
             goos: darwin
             goarch: amd64
-            output: claude-proxy-darwin-amd64
+            binary_name: claude-proxy.app
+            output_name: claude-proxy-darwin-amd64.app
           - os: macos-latest
             goos: darwin
             goarch: arm64
-            output: claude-proxy-darwin-arm64
+            binary_name: claude-proxy.app
+            output_name: claude-proxy-darwin-arm64.app
 
     runs-on: ${{ matrix.os }}
 
@@ -34,22 +37,29 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: '1.21'
+          cache: true
 
       - name: Install Wails
         run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
 
       - name: Build
-        run: wails build -platform ${{ matrix.goos }}/${{ matrix.goarch }} -clean -o ${{ matrix.output }}
+        run: wails build -platform ${{ matrix.goos }}/${{ matrix.goarch }} -clean
 
-      - name: List build output
+      - name: Rename and prepare artifact
+        shell: bash
         run: |
-          echo "=== Build directory ==="
-          ls -la build/bin/ || echo "build/bin/ not found"
-          echo "=== Project root ==="
-          ls -la *.exe *.app 2>/dev/null || echo "No artifacts in root"
+          if [ "${{ matrix.os }}" = "windows-latest" ]; then
+            mv build/bin/${{ matrix.binary_name }} ${{ matrix.output_name }}
+          else
+            # macOS: rename the .app bundle
+            if [ -d "build/bin/${{ matrix.binary_name }}" ]; then
+              mv "build/bin/${{ matrix.binary_name }}" "${{ matrix.output_name }}"
+            fi
+          fi
+          ls -la ${{ matrix.output_name }}
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.output }}
-          path: build/bin/${{ matrix.output }}
+          name: ${{ matrix.output_name }}
+          path: ${{ matrix.output_name }}
