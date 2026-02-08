@@ -102,23 +102,7 @@ curl -x $HTTPS_PROXY https://httpbin.org/ip
 claude
 ```
 
-### 第五步：永久配置（可选）
-
-为了避免每次都要设置环境变量，可以将代理配置添加到 shell 配置文件：
-
-**Bash 用户：**
-```bash
-echo 'export HTTP_PROXY=http://127.0.0.1:8080' >> ~/.bashrc
-echo 'export HTTPS_PROXY=http://127.0.0.1:8080' >> ~/.bashrc
-source ~/.bashrc
-```
-
-**Zsh 用户：**
-```bash
-echo 'export HTTP_PROXY=http://127.0.0.1:8080' >> ~/.zshrc
-echo 'export HTTPS_PROXY=http://127.0.0.1:8080' >> ~/.zshrc
-source ~/.zshrc
-```
+> **注意**：不建议将代理配置写入 `~/.bashrc` 或 `~/.zshrc`，这可能导致 SSH 等系统服务无法正常工作。
 
 ## 🎯 应用界面功能
 
@@ -250,11 +234,61 @@ ssh username@b-computer-ip
 
 ## 📊 技术特性
 
-- **跨平台支持**：Windows、macOS、Linux
+- **跨平台支持**：Windows、macOS（Intel/Apple Silicon）
 - **自动重连**：网络波动时自动恢复连接
 - **实时日志**：详细的运行日志帮助排查问题
 - **配置持久化**：自动保存配置，下次启动无需重新填写
 - **多种认证**：支持密码、密钥、SSH Agent 等多种认证方式
+
+## 🔨 编译说明
+
+### 前置要求
+
+- **Go** 1.21 或更高版本
+- **Node.js** 18+ 和 npm
+- **Wails** v2.11.0
+
+### 安装 Wails
+
+```bash
+go install github.com/wailsapp/wails/v2/cmd/wails@latest
+```
+
+### 编译步骤
+
+```bash
+# 克隆项目
+git clone https://github.com/xiaomengdashi/claude-proxy.git
+cd claude-proxy
+
+# 下载前端依赖
+cd frontend && npm install && cd ..
+
+# 开发模式（带热重载）
+wails dev
+
+# 编译当前平台
+wails build
+
+# 交叉编译（指定平台）
+wails build -platform windows/amd64
+wails build -platform darwin/amd64
+wails build -platform darwin/arm64
+```
+
+### 系统依赖
+
+**Linux（Ubuntu/Debian）：**
+```bash
+sudo apt-get install libwebkit2gtk-4.1-dev build-essential libgtk-3-dev libappindicator3-dev librsvg2-dev
+```
+
+**macOS：**
+- 安装 Xcode Command Line Tools
+- 无需额外依赖
+
+**Windows：**
+- 无需额外依赖
 
 ## 📝 许可证
 
