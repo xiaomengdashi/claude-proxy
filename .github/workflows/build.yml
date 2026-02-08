@@ -15,7 +15,7 @@ jobs:
             goos: windows
             goarch: amd64
             output: claude-proxy-windows-amd64.exe
-          - os: macos-12
+          - os: macos-latest
             goos: darwin
             goarch: amd64
             output: claude-proxy-darwin-amd64
