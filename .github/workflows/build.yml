@@ -1,39 +1,42 @@
-name: Build Multi-Platform
+name: Release
 
 on:
   push:
     tags:
-      - 'v*'
+      - "v*"
   workflow_dispatch:
 
 jobs:
-  build:
+  build-wails:
+    permissions:
+      contents: write
     strategy:
+      fail-fast: false
       matrix:
         include:
-          - os: windows-latest
-            goos: windows
-            goarch: amd64
-            binary_name: claude-proxy.exe
-            output_name: claude-proxy-windows-amd64.exe
-            package_name: claude-proxy-windows-amd64.zip
-          - os: macos-latest
+          - platform: "macos-latest"
             goos: darwin
             goarch: amd64
             binary_name: claude-proxy.app
             output_name: claude-proxy-darwin-amd64.app
             package_name: claude-proxy-darwin-amd64.dmg
-          - os: macos-latest
+          - platform: "macos-latest"
             goos: darwin
             goarch: arm64
             binary_name: claude-proxy.app
             output_name: claude-proxy-darwin-arm64.app
             package_name: claude-proxy-darwin-arm64.dmg
+          - platform: "windows-latest"
+            goos: windows
+            goarch: amd64
+            binary_name: claude-proxy.exe
+            output_name: claude-proxy-windows-amd64.exe
+            package_name: claude-proxy-windows-amd64.zip
 
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ matrix.platform }}
 
     steps:
-      - name: Checkout code
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Setup Go
@@ -45,13 +48,13 @@ jobs:
       - name: Install Wails
         run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
 
-      - name: Build
+      - name: Build the app
         run: wails build -platform ${{ matrix.goos }}/${{ matrix.goarch }} -clean
 
       - name: Rename and prepare artifact
         shell: bash
         run: |
-          if [ "${{ matrix.os }}" = "windows-latest" ]; then
+          if [ "${{ matrix.platform }}" = "windows-latest" ]; then
             mv build/bin/${{ matrix.binary_name }} ${{ matrix.output_name }}
           else
             # macOS: rename the .app bundle
@@ -62,40 +65,67 @@ jobs:
           ls -la ${{ matrix.output_name }}
 
       - name: Create package (Windows)
-        if: matrix.os == 'windows-latest'
+        if: matrix.platform == 'windows-latest'
         run: |
           7z a -tzip ${{ matrix.package_name }} ${{ matrix.output_name }}
 
       - name: Create package (macOS)
-        if: startsWith(matrix.os, 'macos')
+        if: startsWith(matrix.platform, 'macos')
         run: |
           # Create DMG
           hdiutil create -volname "Claude Proxy" -srcfolder "${{ matrix.output_name }}" -ov -format UDZO "${{ matrix.package_name }}"
 
-      - name: Upload artifact
+      # 上传安装包到 Artifacts (供后续统一发布任务下载)
+      - name: Upload Release Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.package_name }}
-          path: ${{ matrix.package_name }}
+          name: release-assets-${{ matrix.platform }}-${{ strategy.job-index }}
+          path: |
+            ${{ matrix.package_name }}
+          if-no-files-found: error
 
-  release:
-    needs: build
+  publish-release:
+    needs: build-wails
     runs-on: ubuntu-latest
     permissions:
       contents: write
 
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # 下载所有构建产物
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
-          path: artifacts
+          path: all-artifacts
+          pattern: "release-assets-*"
+          merge-multiple: true
 
-      - name: Create Release
-        uses: softprops/action-gh-release@v1
+      - name: Extract Release Notes
+        run: |
+          VERSION="${{ github.ref_name }}"
+          echo "Extracting release notes for version $VERSION"
+          awk -v ver="$VERSION" '
+            BEGIN { capture=0 }
+            $0 ~ "^[[:space:]]*[*+-][[:space:]]+\\*\\*" ver { capture=1; next }
+            capture && $0 ~ "^[[:space:]]*[*+-][[:space:]]+\\*\\*v" { capture=0; exit }
+            capture { print }
+          ' README.md | sed 's/^[[:space:]]\{8\}//' > release_notes.md
+          if [ ! -s release_notes.md ]; then
+            echo "See the assets to download this version and install." > release_notes.md
+          fi
+
+      # 使用 ncipollo/release-action 进行统一发布，支持稳健覆盖
+      - name: Create or Update GitHub Release
+        uses: ncipollo/release-action@v1
+        if: startsWith(github.ref, 'refs/tags/')
         with:
-          files: artifacts/*/*
-          generate_release_notes: true
-          draft: false
-          prerelease: false
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          allowUpdates: true
+          name: "Claude Proxy ${{ github.ref_name }}"
+          bodyFile: "release_notes.md"
+          token: ${{ secrets.GITHUB_TOKEN }}
+          artifacts: "all-artifacts/**/*"
+          artifactErrorsFailBuild: false
+          replacesArtifacts: true
+          makeLatest: legacy
